@@ -1,0 +1,12 @@
+[package]
+name = "tidy-globs"
+version = "0.1.0"
+edition = "2021"
+description = "Normalizes messy file glob patterns into a canonical form"
+license = "MIT"
+
+[[bin]]
+name = "tidy-globs"
+path = "src/main.rs"
+
+[dependencies]
