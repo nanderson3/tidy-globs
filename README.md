@@ -15,7 +15,10 @@ does not validate glob syntax - it only cleans up the string.
 - `a//b` -> `a/b` (runs of slashes collapse to one)
 - `./src/*.rs` -> `src/*.rs` (redundant `./` segments are dropped)
 - `**/**/target` -> `**/target` (repeated `**` collapses to one)
+- `{ a, b }` -> `{a,b}` (brace-group spacing is trimmed, including nested groups)
 - surrounding whitespace is trimmed
+
+Patterns with unbalanced braces are left untouched rather than guessed at.
 
 A leading `/` is kept, since it changes what the pattern anchors to. A single
 trailing `/` is also kept, since tools like gitignore give it a distinct
@@ -52,7 +55,6 @@ assert_eq!(normalize("./src//*.rs"), "src/*.rs");
 
 ## Status
 
-Early. The normalization rules cover the common cases above; things like
-brace-expansion spacing (`{ a, b }` -> `{a,b}`) and Windows-style backslash
-separators aren't handled yet. See the code for the exact rules - they're
-short enough to read in one sitting.
+Early. The normalization rules cover the common cases above; Windows-style
+backslash separators aren't handled yet. See the code for the exact rules -
+they're short enough to read in one sitting.
