@@ -84,8 +84,46 @@ fn normalize_brace_group(chars: &[char], pos: &mut usize) -> String {
     alternatives.join(",")
 }
 
+/// True for characters that give a backslash escape meaning in glob syntax.
+/// A backslash in front of one of these is left alone rather than read as a
+/// Windows path separator, since collapsing it would change what the
+/// pattern matches (`\*` stops meaning a literal asterisk).
+fn escapes_glob_metachar(c: char) -> bool {
+    matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | ',' | '\\')
+}
+
+/// Rewrites backslashes used as Windows-style path separators into forward
+/// slashes, e.g. `src\lib\mod.rs` -> `src/lib/mod.rs`. A backslash that
+/// escapes a glob metacharacter (`\*`, `\?`, `\[`, `\]`, `\{`, `\}`, `\,`,
+/// `\\`) is left untouched, including the backslash itself.
+fn normalize_separators(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' {
+            if let Some(&next) = chars.get(i + 1) {
+                if escapes_glob_metachar(next) {
+                    out.push('\\');
+                    out.push(next);
+                    i += 2;
+                    continue;
+                }
+            }
+            out.push('/');
+            i += 1;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Rewrites a glob pattern into a canonical form without changing what it
 /// matches:
+///   - Windows-style backslash separators become forward slashes
+///     ("src\\lib\\mod.rs" -> "src/lib/mod.rs")
 ///   - runs of slashes collapse to one ("a//b" -> "a/b")
 ///   - "./" segments are dropped ("./src/*.rs" -> "src/*.rs")
 ///   - repeated "**" segments collapse to one ("**/**/x" -> "**/x")
@@ -97,7 +135,8 @@ fn normalize(pattern: &str) -> String {
     if pattern.is_empty() {
         return String::new();
     }
-    let pattern = normalize_brace_spacing(pattern);
+    let pattern = normalize_separators(pattern);
+    let pattern = normalize_brace_spacing(&pattern);
     let pattern = pattern.as_str();
 
     let is_absolute = pattern.starts_with('/');
@@ -225,6 +264,28 @@ mod tests {
     fn leaves_unbalanced_braces_untouched() {
         assert_eq!(normalize("{a, b/*.rs"), "{a, b/*.rs");
         assert_eq!(normalize("a, b}/*.rs"), "a, b}/*.rs");
+    }
+
+    #[test]
+    fn converts_windows_backslash_separators() {
+        assert_eq!(normalize(r"src\lib\mod.rs"), "src/lib/mod.rs");
+        assert_eq!(normalize(r"C:\Users\name\project\*.rs"), "C:/Users/name/project/*.rs");
+    }
+
+    #[test]
+    fn collapses_mixed_separators() {
+        assert_eq!(normalize(r"src\sub/dir\*.rs"), "src/sub/dir/*.rs");
+    }
+
+    #[test]
+    fn preserves_backslash_escapes_of_glob_metacharacters() {
+        assert_eq!(normalize(r"a\*b"), r"a\*b");
+        assert_eq!(normalize(r"a\{b\}"), r"a\{b\}");
+    }
+
+    #[test]
+    fn preserves_escaped_backslash_pairs() {
+        assert_eq!(normalize(r"a\\b"), r"a\\b");
     }
 
     #[test]
