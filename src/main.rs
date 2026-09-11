@@ -167,30 +167,75 @@ fn normalize(pattern: &str) -> String {
     out
 }
 
-fn run<R: BufRead, W: Write>(patterns: &[String], input: R, mut output: W) -> io::Result<()> {
+/// If `check` is true, patterns that aren't already in canonical form are
+/// written to `output` unchanged (one per line, like `gofmt -l` lists files
+/// that need reformatting) and the return value is `true`. Otherwise every
+/// pattern's normalized form is written and the return value is always
+/// `false`. Blank lines from stdin are skipped either way.
+fn run<R: BufRead, W: Write>(
+    patterns: &[String],
+    check: bool,
+    input: R,
+    mut output: W,
+) -> io::Result<bool> {
+    let mut needs_normalizing = false;
+    let mut handle = |line: &str| -> io::Result<()> {
+        let normalized = normalize(line);
+        if check {
+            if normalized != line.trim() {
+                needs_normalizing = true;
+                writeln!(output, "{}", line.trim())?;
+            }
+        } else {
+            writeln!(output, "{}", normalized)?;
+        }
+        Ok(())
+    };
+
     if patterns.is_empty() {
         for line in input.lines() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            writeln!(output, "{}", normalize(&line))?;
+            handle(&line)?;
         }
     } else {
         for pattern in patterns {
-            writeln!(output, "{}", normalize(pattern))?;
+            handle(pattern)?;
         }
     }
-    Ok(())
+    Ok(needs_normalizing)
+}
+
+/// Splits raw CLI args into the `--check` flag and the pattern arguments.
+fn parse_args(args: &[String]) -> (bool, Vec<String>) {
+    let mut check = false;
+    let mut patterns = Vec::new();
+    for arg in args {
+        if arg == "--check" {
+            check = true;
+        } else {
+            patterns.push(arg.clone());
+        }
+    }
+    (check, patterns)
 }
 
 fn main() -> ExitCode {
-    let patterns: Vec<String> = env::args().skip(1).collect();
+    let args: Vec<String> = env::args().skip(1).collect();
+    let (check, patterns) = parse_args(&args);
     let stdin = io::stdin();
     let stdout = io::stdout();
 
-    match run(&patterns, stdin.lock(), stdout.lock()) {
-        Ok(()) => ExitCode::SUCCESS,
+    match run(&patterns, check, stdin.lock(), stdout.lock()) {
+        Ok(needs_normalizing) => {
+            if needs_normalizing {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         Err(err) => {
             eprintln!("tidy-globs: {}", err);
             ExitCode::FAILURE
@@ -292,7 +337,7 @@ mod tests {
     fn run_reads_stdin_when_no_args_given() {
         let input = b"./a//b\n\nc/./d\n" as &[u8];
         let mut output = Vec::new();
-        super::run(&[], input, &mut output).unwrap();
+        super::run(&[], false, input, &mut output).unwrap();
         assert_eq!(output, b"a/b\nc/d\n");
     }
 
@@ -301,7 +346,44 @@ mod tests {
         let input = b"" as &[u8];
         let mut output = Vec::new();
         let args = vec!["./x//y".to_string()];
-        super::run(&args, input, &mut output).unwrap();
+        super::run(&args, false, input, &mut output).unwrap();
         assert_eq!(output, b"x/y\n");
+    }
+
+    #[test]
+    fn check_reports_nothing_when_already_normalized() {
+        let input = b"" as &[u8];
+        let mut output = Vec::new();
+        let args = vec!["src/*.rs".to_string()];
+        let needs_normalizing = super::run(&args, true, input, &mut output).unwrap();
+        assert!(!needs_normalizing);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn check_lists_patterns_that_would_change() {
+        let input = b"" as &[u8];
+        let mut output = Vec::new();
+        let args = vec!["./a//b".to_string(), "c/d".to_string()];
+        let needs_normalizing = super::run(&args, true, input, &mut output).unwrap();
+        assert!(needs_normalizing);
+        assert_eq!(output, b"./a//b\n");
+    }
+
+    #[test]
+    fn check_reads_stdin_when_no_args_given() {
+        let input = b"./a//b\nc/d\n" as &[u8];
+        let mut output = Vec::new();
+        let needs_normalizing = super::run(&[], true, input, &mut output).unwrap();
+        assert!(needs_normalizing);
+        assert_eq!(output, b"./a//b\n");
+    }
+
+    #[test]
+    fn parse_args_splits_check_flag_from_patterns() {
+        let args = vec!["--check".to_string(), "src/*.rs".to_string()];
+        let (check, patterns) = super::parse_args(&args);
+        assert!(check);
+        assert_eq!(patterns, vec!["src/*.rs".to_string()]);
     }
 }

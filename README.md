@@ -58,6 +58,23 @@ returning an owned `String`:
 assert_eq!(normalize("./src//*.rs"), "src/*.rs");
 ```
 
+## CI usage
+
+Pass `--check` to verify that a set of patterns is already in canonical form
+without rewriting anything. Patterns that would change are printed to stdout
+(one per line, in their original form), and the process exits non-zero:
+
+```
+$ cargo run -- --check './src//*.rs' 'assets/*.png'
+./src//*.rs
+$ echo $?
+1
+```
+
+If every pattern is already canonical, nothing is printed and the exit code
+is 0. This is meant for a CI step that fails when someone commits a glob
+pattern that hasn't been run through `tidy-globs` first.
+
 ## Status
 
 Early. The normalization rules cover the common cases above. See the code
