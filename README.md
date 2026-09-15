@@ -75,6 +75,17 @@ If every pattern is already canonical, nothing is printed and the exit code
 is 0. This is meant for a CI step that fails when someone commits a glob
 pattern that hasn't been run through `tidy-globs` first.
 
+Pass `--diff` to see only what would actually change, in its normalized
+form, skipping patterns that are already canonical:
+
+```
+$ cargo run -- --diff './src//*.rs' 'assets/*.png'
+src/*.rs
+```
+
+Unlike `--check`, `--diff` always exits 0 - it's meant for a quick look at a
+batch of patterns, not for CI.
+
 ## Status
 
 Early. The normalization rules cover the common cases above. See the code

@@ -167,27 +167,51 @@ fn normalize(pattern: &str) -> String {
     out
 }
 
-/// If `check` is true, patterns that aren't already in canonical form are
-/// written to `output` unchanged (one per line, like `gofmt -l` lists files
-/// that need reformatting) and the return value is `true`. Otherwise every
-/// pattern's normalized form is written and the return value is always
-/// `false`. Blank lines from stdin are skipped either way.
+/// Which of the three output behaviors `run` should use.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Write every pattern's normalized form.
+    Normalize,
+    /// Write only patterns that aren't already canonical, unchanged (like
+    /// `gofmt -l` lists files that need reformatting), and signal via the
+    /// return value that at least one was found.
+    Check,
+    /// Write only the normalized form of patterns that actually changed,
+    /// skipping the ones already canonical. Meant for eyeballing what a
+    /// batch of patterns will become, not for CI - the return value is
+    /// always `false`.
+    Diff,
+}
+
+/// Runs `mode` over `patterns` (or, if empty, over lines read from `input`),
+/// writing to `output`. Returns `true` only when `mode` is `Check` and at
+/// least one pattern wasn't already canonical. Blank lines from stdin are
+/// skipped in every mode.
 fn run<R: BufRead, W: Write>(
     patterns: &[String],
-    check: bool,
+    mode: Mode,
     input: R,
     mut output: W,
 ) -> io::Result<bool> {
     let mut needs_normalizing = false;
     let mut handle = |line: &str| -> io::Result<()> {
         let normalized = normalize(line);
-        if check {
-            if normalized != line.trim() {
-                needs_normalizing = true;
-                writeln!(output, "{}", line.trim())?;
+        let changed = normalized != line.trim();
+        match mode {
+            Mode::Check => {
+                if changed {
+                    needs_normalizing = true;
+                    writeln!(output, "{}", line.trim())?;
+                }
             }
-        } else {
-            writeln!(output, "{}", normalized)?;
+            Mode::Diff => {
+                if changed {
+                    writeln!(output, "{}", normalized)?;
+                }
+            }
+            Mode::Normalize => {
+                writeln!(output, "{}", normalized)?;
+            }
         }
         Ok(())
     };
@@ -208,27 +232,30 @@ fn run<R: BufRead, W: Write>(
     Ok(needs_normalizing)
 }
 
-/// Splits raw CLI args into the `--check` flag and the pattern arguments.
-fn parse_args(args: &[String]) -> (bool, Vec<String>) {
-    let mut check = false;
+/// Splits raw CLI args into the run mode (`--check` or `--diff`, defaulting
+/// to `Normalize`) and the pattern arguments.
+fn parse_args(args: &[String]) -> (Mode, Vec<String>) {
+    let mut mode = Mode::Normalize;
     let mut patterns = Vec::new();
     for arg in args {
         if arg == "--check" {
-            check = true;
+            mode = Mode::Check;
+        } else if arg == "--diff" {
+            mode = Mode::Diff;
         } else {
             patterns.push(arg.clone());
         }
     }
-    (check, patterns)
+    (mode, patterns)
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (check, patterns) = parse_args(&args);
+    let (mode, patterns) = parse_args(&args);
     let stdin = io::stdin();
     let stdout = io::stdout();
 
-    match run(&patterns, check, stdin.lock(), stdout.lock()) {
+    match run(&patterns, mode, stdin.lock(), stdout.lock()) {
         Ok(needs_normalizing) => {
             if needs_normalizing {
                 ExitCode::FAILURE
@@ -245,7 +272,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize;
+    use super::{normalize, Mode};
 
     #[test]
     fn collapses_repeated_slashes() {
@@ -337,7 +364,7 @@ mod tests {
     fn run_reads_stdin_when_no_args_given() {
         let input = b"./a//b\n\nc/./d\n" as &[u8];
         let mut output = Vec::new();
-        super::run(&[], false, input, &mut output).unwrap();
+        super::run(&[], Mode::Normalize, input, &mut output).unwrap();
         assert_eq!(output, b"a/b\nc/d\n");
     }
 
@@ -346,7 +373,7 @@ mod tests {
         let input = b"" as &[u8];
         let mut output = Vec::new();
         let args = vec!["./x//y".to_string()];
-        super::run(&args, false, input, &mut output).unwrap();
+        super::run(&args, Mode::Normalize, input, &mut output).unwrap();
         assert_eq!(output, b"x/y\n");
     }
 
@@ -355,7 +382,7 @@ mod tests {
         let input = b"" as &[u8];
         let mut output = Vec::new();
         let args = vec!["src/*.rs".to_string()];
-        let needs_normalizing = super::run(&args, true, input, &mut output).unwrap();
+        let needs_normalizing = super::run(&args, Mode::Check, input, &mut output).unwrap();
         assert!(!needs_normalizing);
         assert!(output.is_empty());
     }
@@ -365,7 +392,7 @@ mod tests {
         let input = b"" as &[u8];
         let mut output = Vec::new();
         let args = vec!["./a//b".to_string(), "c/d".to_string()];
-        let needs_normalizing = super::run(&args, true, input, &mut output).unwrap();
+        let needs_normalizing = super::run(&args, Mode::Check, input, &mut output).unwrap();
         assert!(needs_normalizing);
         assert_eq!(output, b"./a//b\n");
     }
@@ -374,16 +401,51 @@ mod tests {
     fn check_reads_stdin_when_no_args_given() {
         let input = b"./a//b\nc/d\n" as &[u8];
         let mut output = Vec::new();
-        let needs_normalizing = super::run(&[], true, input, &mut output).unwrap();
+        let needs_normalizing = super::run(&[], Mode::Check, input, &mut output).unwrap();
         assert!(needs_normalizing);
         assert_eq!(output, b"./a//b\n");
     }
 
     #[test]
+    fn diff_prints_only_changed_patterns_normalized() {
+        let input = b"" as &[u8];
+        let mut output = Vec::new();
+        let args = vec!["./a//b".to_string(), "c/d".to_string()];
+        let needs_normalizing = super::run(&args, Mode::Diff, input, &mut output).unwrap();
+        assert!(!needs_normalizing);
+        assert_eq!(output, b"a/b\n");
+    }
+
+    #[test]
+    fn diff_reports_nothing_when_already_normalized() {
+        let input = b"" as &[u8];
+        let mut output = Vec::new();
+        let args = vec!["src/*.rs".to_string()];
+        super::run(&args, Mode::Diff, input, &mut output).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn diff_reads_stdin_when_no_args_given() {
+        let input = b"./a//b\nc/d\n" as &[u8];
+        let mut output = Vec::new();
+        super::run(&[], Mode::Diff, input, &mut output).unwrap();
+        assert_eq!(output, b"a/b\n");
+    }
+
+    #[test]
     fn parse_args_splits_check_flag_from_patterns() {
         let args = vec!["--check".to_string(), "src/*.rs".to_string()];
-        let (check, patterns) = super::parse_args(&args);
-        assert!(check);
+        let (mode, patterns) = super::parse_args(&args);
+        assert!(mode == Mode::Check);
+        assert_eq!(patterns, vec!["src/*.rs".to_string()]);
+    }
+
+    #[test]
+    fn parse_args_splits_diff_flag_from_patterns() {
+        let args = vec!["--diff".to_string(), "src/*.rs".to_string()];
+        let (mode, patterns) = super::parse_args(&args);
+        assert!(mode == Mode::Diff);
         assert_eq!(patterns, vec!["src/*.rs".to_string()]);
     }
 }
