@@ -51,12 +51,18 @@ assets/**/*.png
 src/lib/mod.rs
 ```
 
-As a library function, `normalize` lives in `src/main.rs` and takes a `&str`,
-returning an owned `String`:
+`tidy-globs` is also a library crate. `normalize` takes a `&str` and returns
+an owned `String`:
 
 ```rust
+use tidy_globs::normalize;
+
 assert_eq!(normalize("./src//*.rs"), "src/*.rs");
 ```
+
+`run` and `parse_args` are exposed too, if you want the same batch/CI
+behavior the binary uses (patterns in, `Mode::Normalize` / `Check` / `Diff`
+out) without shelling out to it.
 
 ## CI usage
 

@@ -5,6 +5,10 @@ edition = "2021"
 description = "Normalizes messy file glob patterns into a canonical form"
 license = "MIT"
 
+[lib]
+name = "tidy_globs"
+path = "src/lib.rs"
+
 [[bin]]
 name = "tidy-globs"
 path = "src/main.rs"
